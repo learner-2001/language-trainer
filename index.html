@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>مدرّب المهارة الآلية</title>
+<style>
+:root{--bg:#f6f4ef;--card:#fff;--ink:#1d1d1b;--mute:#6b6a65;--line:#e4e1d8;--accent:#0f6b5c;--accent-ink:#fff;--ok:#1f8a4c;--okbg:#e3f4ea;--bad:#c0392b;--badbg:#fbe5e2;--warn:#a5640a;--warnbg:#fdf0d9}
+@media (prefers-color-scheme:dark){:root{--bg:#15171a;--card:#1f2226;--ink:#eceae4;--mute:#a09e97;--line:#32363b;--accent:#3fb59f;--accent-ink:#04201a;--ok:#4cc27d;--okbg:#17321f;--bad:#ef6b5c;--badbg:#3a1d1a;--warn:#e0a548;--warnbg:#3a2c10}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:"Segoe UI",Tahoma,"Noto Sans Arabic","Noto Naskh Arabic",system-ui,sans-serif;line-height:1.55;padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+.wrap{max-width:560px;margin:0 auto;padding:16px}
+h1{font-size:1.35rem;margin:8px 0 2px}
+h2{font-size:1.05rem;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
+.mute{color:var(--mute);font-size:.92rem}
+.warnbox{background:var(--warnbg);color:var(--warn);border-radius:12px;padding:10px 12px;margin:12px 0;font-size:.95rem}
+button{font:inherit;cursor:pointer;color:inherit}
+.btn{display:block;width:100%;min-height:54px;border-radius:14px;border:1px solid var(--line);background:var(--card);font-size:1.1rem;padding:10px 14px;margin-top:10px}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+.btn.small{min-height:44px;font-size:1rem}
+.top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px}
+.top button{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:6px 12px}
+.badge{font-size:.9rem;color:var(--mute)}
+.bar{height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin:10px 0}
+.bar i{display:block;height:100%;width:100%;background:var(--accent);transition:width .1s linear}
+.bar i.low{background:var(--bad)}
+.prompt{text-align:center;padding:24px 12px;min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+.en{font-size:2.1rem;font-weight:700;direction:ltr;unicode-bidi:isolate;word-break:break-word}
+.ar{font-size:1.7rem;font-weight:700}
+.tag{font-size:.8rem;background:var(--warnbg);color:var(--warn);border-radius:20px;padding:2px 10px}
+.opts{display:grid;gap:10px;margin-top:6px}
+.opt{min-height:58px;border-radius:14px;border:1.5px solid var(--line);background:var(--card);font-size:1.15rem;padding:10px 12px;text-align:center;word-break:break-word}
+.opt.en2{direction:ltr;unicode-bidi:isolate}
+.opt.ok{background:var(--okbg);border-color:var(--ok)}
+.opt.bad{background:var(--badbg);border-color:var(--bad)}
+.opt.dim{opacity:.55}
+.big{font-size:3rem;font-weight:800;text-align:center;margin:4px 0}
+.row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.row:last-child{border-bottom:0}
+.miss{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed var(--line)}
+.miss b{direction:ltr;unicode-bidi:isolate}
+textarea{width:100%;min-height:74px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:.85rem;direction:ltr;resize:none}
+.sound{font-size:1.6rem;background:var(--card);border:1px solid var(--line);border-radius:50%;width:64px;height:64px}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><p class="mute">جارٍ التحميل…</p></div>
+<noscript><div class="wrap"><p>هذه الصفحة تحتاج JavaScript لتعمل.</p></div></noscript>
+
+<script>
+(function(){
+'use strict';
+const CFG={owner:'learner-2001',repo:'language-trainer',branch:'main'};
+const app=document.getElementById('app');
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const MODE_AR={recall:'استدعاء سريع',reverse:'ترجمة عكسية',dictation:'إملاء سمعي',flash:'قراءة سريعة'};
+const MODE_ICON={recall:'⚡',reverse:'🔁',dictation:'🎧',flash:'👁️'};
+const MODE_LETTER={recall:'r',reverse:'v',dictation:'d',flash:'f'};
+const LETTER_MODE={r:'recall',v:'reverse',d:'dictation',f:'flash'};
+const TY_AR={verb:'فعل',adjective:'صفة',phrasal:'فعل مركب',sentence:'جملة'};
+let WORDS=null,PLAN=null,PLAN_ERR=null,BYID=new Map(),POOL={},ALL=[];
+let sess=null;
+
+/* ---------- helpers ---------- */
+function altsOf(t){return t.split(/[\/،,]/).map(p=>p.replace(/[إأآٱ]/g,'ا').replace(/ى/g,'ي').replace(/[^\u0600-\u06FFa-zA-Z0-9\s]/g,'').replace(/\s+/g,' ').trim()).filter(Boolean);}
+function overlap(a,b){for(const x of a)if(b.has(x))return true;return false;}
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+function ttsOK(){return 'speechSynthesis' in window&&typeof window.SpeechSynthesisUtterance!=='undefined';}
+let voiceEN=null;
+function initVoices(){if(!ttsOK())return;const load=()=>{try{const vs=speechSynthesis.getVoices()||[];voiceEN=vs.find(v=>/^en[-_]US/i.test(v.lang))||vs.find(v=>/^en/i.test(v.lang))||null;}catch(e){}};load();try{speechSynthesis.onvoiceschanged=load;}catch(e){}}
+function speak(text){if(!ttsOK())return false;try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-US';if(voiceEN)u.voice=voiceEN;u.rate=0.9;speechSynthesis.speak(u);return true;}catch(e){return false;}}
+function todayStr(){return new Date().toLocaleDateString('en-CA');}
+function lsGet(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+function lsDel(k){try{localStorage.removeItem(k);}catch(e){}}
+
+async function getJSON(path,fresh){
+  const api=`https://api.github.com/repos/${CFG.owner}/${CFG.repo}/contents/${path}?ref=${CFG.branch}`;
+  const raw=`https://raw.githubusercontent.com/${CFG.owner}/${CFG.repo}/${CFG.branch}/${path}`;
+  const tries=fresh
+    ?[()=>fetch(api,{headers:{Accept:'application/vnd.github.raw+json'},cache:'no-store'}),()=>fetch(raw+'?t='+Date.now(),{cache:'no-store'})]
+    :[()=>fetch(raw),()=>fetch(api,{headers:{Accept:'application/vnd.github.raw+json'}})];
+  let err=null;
+  for(const t of tries){
+    try{const r=await t();if(r.ok)return await r.json();err=new Error('HTTP '+r.status);err.status=r.status;}
+    catch(e){err=e;}
+  }
+  throw err;
+}
+
+function buildIndex(){
+  BYID=new Map();POOL={};ALL=WORDS.items;
+  for(const it of ALL){it._a=new Set(altsOf(it.tr));BYID.set(it.id,it);(POOL[it.ty]=POOL[it.ty]||[]).push(it);}
+}
+
+function distractors(item,n){
+  const out=[],taken=[item._a],lw=item.w.toLowerCase();
+  const ok=c=>c.id!==item.id&&c.w.toLowerCase()!==lw&&taken.every(a=>!overlap(a,c._a))&&!out.some(o=>o.w.toLowerCase()===c.w.toLowerCase());
+  for(const pool of [POOL[item.ty]||[],ALL]){
+    let tries=0;
+    while(out.length<n&&tries<800&&pool.length){tries++;const c=pool[Math.floor(Math.random()*pool.length)];if(ok(c)){out.push(c);taken.push(c._a);}}
+    if(out.length>=n)break;
+  }
+  return out;
+}
+
+/* ---------- screens ---------- */
+function fatal(msg){app.innerHTML=`<h1>مدرّب المهارة الآلية</h1><div class="warnbox">${esc(msg)}</div><button class="btn" id="retry">إعادة المحاولة</button>`;document.getElementById('retry').onclick=boot;}
+
+function home(){
+  const last=lsGet('lt_last');
+  let planHtml;
+  if(PLAN&&PLAN.q&&PLAN.q.length){
+    const cnt={};PLAN.q.forEach(q=>cnt[q.mode]=(cnt[q.mode]||0)+1);
+    const parts=Object.keys(cnt).map(m=>`${MODE_ICON[m]} ${MODE_AR[m]}: ${cnt[m]}`).join(' · ');
+    const stale=PLAN.date!==todayStr();
+    planHtml=`<div class="card"><h2>خطة ${esc(PLAN.date)}</h2><div class="mute">${PLAN.q.length} سؤال — ${parts}</div>
+      ${stale?`<div class="warnbox">هذه الخطة ليست خطة اليوم. اطلب من Claude: «اليوم» لتحديثها.</div>`:''}
+      <button class="btn primary" id="start">ابدأ الجلسة</button></div>`;
+  }else{
+    const why=PLAN_ERR&&PLAN_ERR.status===404?'لا توجد خطة بعد.':'تعذّر تحميل الخطة'+(PLAN_ERR?' ('+esc(PLAN_ERR.message)+')':'')+'.';
+    planHtml=`<div class="card"><h2>لا توجد خطة</h2><div class="mute">${why} اطلب من Claude: «اليوم».</div></div>`;
+  }
+  const lastHtml=last?`<div class="card"><h2>كود جلسة لم تُرسله بعد</h2><div class="mute">جلسة ${esc(last.date)} — الدقة ${esc(last.acc)}%</div>
+    <textarea id="lastcode" readonly>${esc(last.code)}</textarea>
+    <button class="btn small" id="copylast">نسخ الكود</button><button class="btn small" id="clearlast">تم الإرسال (مسح)</button></div>`:'';
+  app.innerHTML=`<h1>مدرّب المهارة الآلية</h1><div class="mute">${ALL.length} كلمة محمّلة</div>${planHtml}${lastHtml}
+    <div class="card"><h2>اختبار الصوت</h2><div class="mute" id="sndmsg">اضغط للتأكد أن النطق يعمل على جهازك.</div><button class="btn small" id="snd">🔊 اختبار الصوت</button></div>`;
+  const s=document.getElementById('start');if(s)s.onclick=begin;
+  document.getElementById('snd').onclick=()=>{const m=document.getElementById('sndmsg');if(!ttsOK()){m.textContent='الصوت غير مدعوم في هذا المتصفح. جرّب متصفحاً آخر (مثل Chrome).';return;}speak('Hello. This is a sound test.');m.textContent='إذا سمعت الصوت فكل شيء تمام. إن لم تسمع شيئاً، تأكد من مستوى الصوت أو جرّب متصفحاً آخر.';};
+  if(last){document.getElementById('copylast').onclick=async()=>{await copyText(last.code,'lastcode');};document.getElementById('clearlast').onclick=()=>{lsDel('lt_last');home();};}
+}
+
+async function copyText(t,areaId){
+  try{await navigator.clipboard.writeText(t);return true;}
+  catch(e){const ta=document.getElementById(areaId);if(ta){ta.select();try{return document.execCommand('copy');}catch(_){}}return false;}
+}
+
+/* ---------- session ---------- */
+function begin(){
+  sess={i:0,res:[],tok:0,timer:null,locked:false,notified:false};
+  showQ();
+}
+function clearTimer(){if(sess&&sess.timer){clearInterval(sess.timer);sess.timer=null;}}
+
+function showQ(){
+  clearTimer();
+  const q=PLAN.q[sess.i];
+  if(!q)return finish();
+  const item=BYID.get(q.id);
+  if(!item){sess.res[sess.i]={id:q.id,mode:q.mode,s:1,c:0,ms:0};sess.i++;return showQ();}
+  let mode=q.mode,note='';
+  if(mode==='dictation'&&!ttsOK()){mode='recall';note='الصوت غير مدعوم هنا، حُوّل هذا السؤال إلى استدعاء سريع.';}
+  if(mode==='flash'&&item.ty==='sentence')mode='recall';
+  sess.cur=q;sess.item=item;sess.mode=mode;sess.locked=false;sess.tok++;
+  const tok=sess.tok,total=PLAN.q.length;
+  const rev=mode==='reverse';
+  const opts=shuffle([item].concat(distractors(item,3)));
+  sess.correctIdx=opts.indexOf(item);
+  const tag=TY_AR[item.ty]?`<span class="tag">${TY_AR[item.ty]}</span>`:'';
+  let prompt;
+  if(rev)prompt=`<div class="ar">${esc(item.tr)}</div><div class="mute">اختر الكلمة الإنجليزية</div>`;
+  else if(mode==='dictation')prompt=`<button class="sound" id="again" aria-label="اسمع">🔊</button><div class="mute">استمع ثم اختر المعنى</div>`;
+  else if(mode==='flash')prompt=`<div class="en" id="flashw">${esc(item.w)}</div>${tag}`;
+  else prompt=`<div class="en">${esc(item.w)}</div>${tag}`;
+  const optsHtml=opts.map((o,k)=>`<button class="opt${rev?' en2':''}" data-k="${k}">${esc(rev?o.w:o.tr)}</button>`).join('');
+  app.innerHTML=`<div class="top"><button id="quit">إنهاء</button><span class="badge">${sess.i+1} / ${total}</span><span class="badge">${MODE_ICON[mode]} ${MODE_AR[mode]}</span></div>
+    <div class="bar"><i id="bar"></i></div>
+    ${note?`<div class="warnbox">${esc(note)}</div>`:''}
+    <div class="card prompt" id="prompt">${prompt}</div>
+    <div class="opts" id="opts" style="${mode==='flash'?'visibility:hidden':''}">${optsHtml}</div>`;
+  document.getElementById('quit').onclick=()=>{if(confirm('إنهاء الجلسة الآن؟ الأسئلة المتبقية ستُحتسب «متروكة».')){clearTimer();sess.tok++;finish();}};
+  document.getElementById('opts').onclick=e=>{const b=e.target.closest('.opt');if(b)onAnswer(+b.dataset.k,tok);};
+  const startTimer=()=>{
+    const t=q.t||6,t0=performance.now();sess.t0=t0;
+    const bar=document.getElementById('bar');
+    sess.timer=setInterval(()=>{
+      if(tok!==sess.tok){clearInterval(sess.timer);return;}
+      const el=(performance.now()-t0)/1000,left=Math.max(0,1-el/t);
+      if(bar){bar.style.width=(left*100)+'%';if(left<=0.25)bar.classList.add('low');}
+      if(el>=t)onTimeout(tok);
+    },100);
+  };
+  if(mode==='dictation'){
+    speak(item.w);
+    const a=document.getElementById('again');if(a)a.onclick=()=>speak(item.w);
+    startTimer();
+  }else if(mode==='flash'){
+    const ms=PLAN.flashMs||800;
+    setTimeout(()=>{
+      if(tok!==sess.tok)return;
+      const fw=document.getElementById('flashw');if(fw)fw.textContent='؟';
+      const o=document.getElementById('opts');if(o)o.style.visibility='visible';
+      startTimer();
+    },ms);
+  }else startTimer();
+}
+
+function mark(correctIdx,pickedIdx){
+  const bs=document.querySelectorAll('#opts .opt');
+  bs.forEach((b,k)=>{if(k===correctIdx)b.classList.add('ok');else if(k===pickedIdx)b.classList.add('bad');else b.classList.add('dim');});
+}
+function record(r){sess.res[sess.i]=Object.assign({id:sess.cur.id,mode:sess.mode,s:0,c:0,ms:0},r);}
+function advance(delay,tok){setTimeout(()=>{if(tok!==sess.tok)return;sess.i++;showQ();},delay);}
+
+function onAnswer(k,tok){
+  if(!sess||sess.locked||tok!==sess.tok)return;
+  sess.locked=true;clearTimer();
+  const ms=Math.round(performance.now()-sess.t0),ok=k===sess.correctIdx;
+  record({c:ok?1:0,ms});mark(sess.correctIdx,k);
+  advance(ok?400:1300,tok);
+}
+function onTimeout(tok){
+  if(!sess||sess.locked||tok!==sess.tok)return;
+  sess.locked=true;clearTimer();
+  record({c:0,ms:Math.round((sess.cur.t||6)*1000),to:1});mark(sess.correctIdx,-1);
+  advance(1300,tok);
+}
+
+function finish(){
+  clearTimer();
+  for(let i=0;i<PLAN.q.length;i++)if(!sess.res[i])sess.res[i]={id:PLAN.q[i].id,mode:PLAN.q[i].mode,s:1,c:0,ms:0};
+  const code=['v1',PLAN.date,sess.res.map(r=>MODE_LETTER[r.mode]+(r.s?'x':r.c?'1':'0')).join(''),sess.res.map(r=>Math.round(r.ms/100)).join(',')].join('|');
+  const done=sess.res.filter(r=>!r.s),right=done.filter(r=>r.c).length;
+  const acc=done.length?Math.round(right/done.length*100):0;
+  const avg=done.length?(done.reduce((a,r)=>a+r.ms,0)/done.length/1000).toFixed(1):'0.0';
+  const by={};done.forEach(r=>{const m=by[r.mode]=by[r.mode]||{n:0,c:0,ms:0};m.n++;m.c+=r.c;m.ms+=r.ms;});
+  const modes=Object.keys(by).map(m=>({m,n:by[m].n,acc:Math.round(by[m].c/by[m].n*100),avg:by[m].ms/by[m].n/1000}));
+  modes.sort((a,b)=>a.acc-b.acc||b.avg-a.avg);
+  const weakest=modes.length>1?modes[0]:null;
+  const missed=done.filter(r=>!r.c).map(r=>BYID.get(r.id)).filter(Boolean);
+  lsSet('lt_last',{code,date:PLAN.date,acc});
+  const rowsHtml=modes.slice().sort((a,b)=>a.m.localeCompare(b.m)).map(x=>`<div class="row"><span>${MODE_ICON[x.m]} ${MODE_AR[x.m]}</span><span>${x.acc}% · ${x.avg.toFixed(1)}ث · ${x.n} سؤال</span></div>`).join('');
+  const missHtml=missed.length?`<div class="card"><h2>كلمات أخطأت فيها (${missed.length})</h2>${missed.map(w=>`<div class="miss"><b>${esc(w.w)}</b><span>${esc(w.tr)}</span></div>`).join('')}</div>`:'';
+  app.innerHTML=`<h1>انتهت الجلسة</h1>
+    <div class="card"><div class="big">${acc}%</div><div class="mute" style="text-align:center">${right} صحيحة من ${done.length} · متوسط الزمن ${avg} ث${done.length<PLAN.q.length?` · ${PLAN.q.length-done.length} متروكة`:''}</div></div>
+    <div class="card"><h2>حسب نوع التمرين</h2>${rowsHtml}${weakest?`<div class="warnbox">أضعف نوع عندك: ${MODE_ICON[weakest.m]} ${MODE_AR[weakest.m]} (${weakest.acc}%)</div>`:''}</div>
+    ${missHtml}
+    <div class="card"><h2>كود الجلسة</h2><div class="mute">انسخه والصقه لـ Claude في المحادثة ليحدّث تقدّمك.</div>
+      <textarea id="code" readonly>${esc(code)}</textarea><button class="btn primary" id="copy">نسخ الكود</button><div class="mute" id="copymsg"></div></div>
+    <button class="btn" id="back">الرجوع للرئيسية</button>`;
+  document.getElementById('copy').onclick=async()=>{const ok=await copyText(code,'code');document.getElementById('copymsg').textContent=ok?'تم النسخ ✓':'تعذّر النسخ تلقائياً، حدّد النص وانسخه يدوياً.';};
+  document.getElementById('back').onclick=home;
+}
+
+/* ---------- boot ---------- */
+async function boot(){
+  app.innerHTML='<h1>مدرّب المهارة الآلية</h1><p class="mute">جارٍ تحميل الكلمات…</p>';
+  try{WORDS=await getJSON('data/words.json',false);}catch(e){return fatal('تعذّر تحميل الكلمات من GitHub ('+e.message+'). تأكد من الاتصال بالإنترنت.');}
+  buildIndex();initVoices();
+  PLAN=null;PLAN_ERR=null;
+  try{PLAN=await getJSON('data/today.json',true);}catch(e){PLAN_ERR=e;}
+  home();
+}
+boot();
+})();
+</script>
+</body>
+</html>
