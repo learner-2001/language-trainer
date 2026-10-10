@@ -116,7 +116,7 @@ const NEW_CYCLE=['word','verb','adjective','phrase','word','verb','adjective','p
 const LEVELS=['A1','A2','B1','B2','C1','C2'];
 const lvCmp=(a,b)=>{const x=LEVELS.indexOf(a),y=LEVELS.indexOf(b);return (x<0?99:x)-(y<0?99:y)||(a<b?-1:a>b?1:0);};
 
-let WORDS=null,PROG=null,PROG_ERR=null,ALL=[],BYID=new Map(),POOL={},ALTS=new Map();
+let WORDS=null,PROG=null,PROG_ERR=null,quotaWarned=false,ALL=[],BYID=new Map(),POOL={},ALTS=new Map();
 let sess=null,settingsOpen=false,impState=null,voiceEN=null,toastT=null;
 
 /* ===================== أدوات صغيرة ===================== */
@@ -156,7 +156,7 @@ const AR_MARKS=/[ً-ٰٟـ]/g;
 function altsOf(t){return String(t).replace(AR_MARKS,'').split(/[\/،,]/).map(p=>p.replace(/[إأآٱ]/g,'ا').replace(/ى/g,'ي').replace(/[^؀-ۿa-zA-Z0-9\s]/g,'').replace(/\s+/g,' ').trim()).filter(Boolean);}
 function overlap(a,b){for(const x of a)if(b.has(x))return true;return false;}
 function lsGet(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}}
-function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true;}catch(e){return false;}}
 function lsDel(k){try{localStorage.removeItem(k);}catch(e){}}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),3800);}
 function b64ToUtf8(b){const bin=atob(b.replace(/\s/g,''));const u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return new TextDecoder().decode(u);}
@@ -253,46 +253,79 @@ function applyToProgress(prog,code){
   prog.sessions=prog.sessions.slice(-100);
   return prog;
 }
-function cacheProg(){lsSet('lt_prog_cache',PROG);}
+function cacheProg(){
+  if(!lsSet('lt_prog_cache',PROG)&&!quotaWarned){quotaWarned=true;toast('ذاكرة المتصفح ممتلئة فتعذّر حفظ تقدّمك على هذا الجهاز. نزّل نسخة احتياطية الآن من الإعدادات.');}
+}
+const dirty=()=>!!lsGet('lt_dirty');
+const setDirty=v=>{if(v)lsSet('lt_dirty',1);else lsDel('lt_dirty');};
+/* دمج تقدّمين: الأحدث يفوز لكل كلمة، وتُجمع الجلسات والأيام بلا تكرار. الأساس هو repo والمحلي يُضاف فوقه */
+function mergeProgress(repo,local){
+  const out=JSON.parse(JSON.stringify(ensureShape(repo))),L=ensureShape(JSON.parse(JSON.stringify(local)));
+  for(const id in L.items){
+    const a=out.items[id],b=L.items[id];
+    if(!a||(b.l||'')>(a.l||'')||((b.l||'')===(a.l||'')&&b.s>a.s))out.items[id]=b;
+  }
+  const key=x=>x.h||(x.date+'|'+x.n+'|'+x.acc);
+  const seen=new Set(out.sessions.map(key));let added=false;
+  for(const x of L.sessions){if(!seen.has(key(x))){seen.add(key(x));out.sessions.push(x);added=true;}}
+  if(added){out.sessions.sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:0);out.sessions=out.sessions.slice(-100);}
+  for(const d in L.daily){const a=out.daily[d],b=L.daily[d];if(!a||b.n>a.n)out.daily[d]=b;}
+  const ls=L.settings||{};
+  for(const k in ls){if(k==='limits'||(out.settings&&out.settings[k]!==undefined))continue;out.settings[k]=ls[k];}
+  if(ls.limits)out.settings.limits=Object.assign({},out.settings.limits||{},ls.limits);
+  return out;
+}
+/* التقدّم المحلي هو المرجع على هذا الجهاز. GitHub مزامنة اختيارية بين الأجهزة */
 async function loadProgress(){
   PROG_ERR=null;
+  const tok=token(),cache=lsGet('lt_prog_cache'),hasCache=!!(cache&&cache.items);
+  if(!tok){
+    if(hasCache)PROG=ensureShape(cache);
+    else{try{PROG=ensureShape(await pubJSON('data/progress.json',true));}catch(e){PROG_ERR=e;PROG=ensureShape({});}}
+    cacheProg();return;
+  }
   try{
-    const tok=token();
-    const raw=tok?JSON.parse((await ghFile('data/progress.json',tok)).text):await pubJSON('data/progress.json',true);
-    PROG=ensureShape(raw);
+    const f=await ghFile('data/progress.json',tok);
+    PROG=ensureShape(JSON.parse(f.text));
   }catch(e){
     PROG_ERR=e;
-    PROG=ensureShape(lsGet('lt_prog_cache')||{});
+    let base=null;
+    if(e.status===401||e.status===403||e.status===404){try{base=await pubJSON('data/progress.json',true);}catch(_){}}
+    PROG=hasCache?(base?mergeProgress(base,cache):ensureShape(cache)):ensureShape(base||{});
+    cacheProg();return;
   }
-  // جلسات لم تصل GitHub بعد تُطبَّق محلياً حتى لا يضيع تقدّمك ولا تتكرر عليك نفس الكلمات
-  for(const p of pendingList()){try{applyToProgress(PROG,p.code);}catch(e){}}
+  if(dirty()&&hasCache)PROG=mergeProgress(PROG,cache);
   cacheProg();
 }
-const pendingList=()=>lsGet('lt_pending')||[];
-const setPending=a=>lsSet('lt_pending',a);
 function localApply(code){try{applyToProgress(PROG,code);cacheProg();}catch(e){}}
 async function autosave(code){
-  const tok=token();if(!tok)throw new Error('الحفظ التلقائي غير مفعّل');
+  const tok=token();if(!tok)throw new Error('المزامنة غير مفعّلة');
   for(let attempt=0;attempt<4;attempt++){
     const f=await ghFile('data/progress.json',tok);
     const prog=JSON.parse(f.text);
     try{applyToProgress(prog,code);}
     catch(e){if(e instanceof AlreadyApplied){PROG=ensureShape(prog);cacheProg();return 'already';}throw e;}
     const r=await ghPut('data/progress.json',JSON.stringify(prog),f.sha,'Session '+code.split('|')[1],tok);
-    if(r.ok){PROG=prog;cacheProg();return 'saved';}
+    if(r.ok){PROG=prog;PROG_ERR=null;cacheProg();return 'saved';}
     if(r.status===409||r.status===422)continue;
     throw statusErr(r.status);
   }
   throw new Error('تعارض متكرر في الملف، حاول بعد قليل.');
 }
-async function flushPending(silent){
-  let saved=0;
-  for(const p of pendingList().slice()){
-    try{await autosave(p.code);setPending(pendingList().filter(x=>x.code!==p.code));saved++;}
-    catch(e){if(!silent)toast('تعذّر الحفظ: '+errMsg(e));break;}
+/* يرسل كل ما على هذا الجهاز إلى GitHub (دمج). يُستعمل عند تفعيل المفتاح وبعد انقطاع الحفظ */
+async function syncPush(){
+  const tok=token();if(!tok)throw new Error('المزامنة غير مفعّلة');
+  for(let attempt=0;attempt<4;attempt++){
+    const f=await ghFile('data/progress.json',tok);
+    const repo=ensureShape(JSON.parse(f.text));
+    const merged=mergeProgress(repo,PROG);
+    if(JSON.stringify(merged)===JSON.stringify(repo)){PROG=repo;PROG_ERR=null;cacheProg();setDirty(false);return 'same';}
+    const r=await ghPut('data/progress.json',JSON.stringify(merged),f.sha,'Sync progress',tok);
+    if(r.ok){PROG=merged;PROG_ERR=null;cacheProg();setDirty(false);return 'pushed';}
+    if(r.status===409||r.status===422)continue;
+    throw statusErr(r.status);
   }
-  if(saved){toast(saved===1?'تم حفظ جلسة كانت معلّقة':'تم حفظ '+saved+' جلسات كانت معلّقة');if(!sess)home();}
-  return saved;
+  throw new Error('تعارض متكرر في الملف، حاول بعد قليل.');
 }
 
 /* ===================== الكلمات والفهرس ===================== */
@@ -449,11 +482,10 @@ function home(){
   const dd=PROG.daily[date]||{n:0,c:0,s:0};
   const streak=streakOf(PROG.daily,date),a7=acc7Of(PROG.daily,date);
   const pct=Math.min(100,Math.round(dd.n/goal*100));
-  const stg=stagesOf(ALL,P),pend=pendingList();
+  const stg=stagesOf(ALL,P);
   const mins=Math.max(1,Math.round(size*4.5/60));
-  let h=`<h1>بوابة الانطلاق</h1><div class="mute">${ALL.length} كلمة في خزانتك</div>`;
-  if(PROG_ERR)h+=`<div class="warnbox">${PROG_ERR.status===401?'المفتاح المحفوظ لم يعد صالحاً. أدخل مفتاحاً جديداً من الإعدادات.':'تعذّر الاتصال بـ GitHub. تظهر آخر بيانات محفوظة على هذا الجهاز، وتُحفظ جلساتك عند عودة الاتصال.'}</div>`;
-  if(!tok)h+=`<div class="card"><h2>فعّل الحفظ التلقائي</h2><div class="mute">بدونه لا يتقدّم تدريبك بين الجلسات. الصق مفتاح GitHub مرة واحدة، ويُحفظ على هذا الجهاز فقط.</div><input id="tokin" type="password" placeholder="github_pat_…" autocomplete="off"><button class="btn small primary" data-act="tokon">فعّل</button><div class="mute" id="tokmsg"></div></div>`;
+  let h=`<h1>بوابة الانطلاق</h1><div class="mute">${ALL.length} كلمة في خزانتك${tok?'':'. تقدّمك يُحفظ على هذا الجهاز تلقائياً.'}</div>`;
+  if(PROG_ERR&&tok)h+=`<div class="warnbox">${PROG_ERR.status===401?'المفتاح المحفوظ لم يعد صالحاً. تدريبك يعمل ويُحفظ على جهازك. لتعود المزامنة، الصق مفتاحاً جديداً من الإعدادات.':'تعذّر الاتصال بـ GitHub. تظهر آخر بيانات محفوظة على هذا الجهاز، وتُرسل جلساتك عند عودة الاتصال.'}</div>`;
   h+=`<div class="tiles">
     <div class="tile"><div class="num">${streak>0?'🔥 ':''}${streak}</div><div class="lbl">${streak===1?'يوم متتالٍ':'أيام متتالية'}</div></div>
     <div class="tile"><div class="ring" style="--p:${pct}"><b>${pct}%</b></div><div class="lbl">هدف اليوم: ${dd.n} من ${goal}</div></div>
@@ -464,10 +496,10 @@ function home(){
     <div class="mute">${size} سؤالاً تستغرق نحو ${mins} دقائق</div>
     ${chips('size',[20,30,50,100],size)}</div>
     <div class="stub"><button class="btn go" id="start" data-act="start">ابدأ الرحلة</button></div></div>`;
-  if(pend.length){
-    h+=`<div class="warnbox"><b>${pend.length} ${pend.length===1?'جلسة لم تُحفظ':'جلسات لم تُحفظ'} بعد.</b> ${tok?'<button class="btn small" data-act="flush">أعد محاولة الحفظ</button>':'فعّل الحفظ التلقائي وستُحفظ وحدها.'}`;
-    if(!tok)h+=`<textarea id="pendcodes" class="ta code" readonly>${esc(pend.map(p=>p.code).join('\n'))}</textarea><button class="btn small" data-act="copy" data-target="pendcodes">انسخ الأكواد</button>`;
-    h+=`</div>`;
+  if(tok&&dirty())h+=`<div class="warnbox"><b>بعض جلساتك لم تصل GitHub بعد.</b> تقدّمك محفوظ على هذا الجهاز ولن يضيع. <button class="btn small" data-act="flush">أعد محاولة الإرسال</button></div>`;
+  if(!tok&&PROG.sessions.length>=4){
+    const lb=lsGet('lt_backup_at'),ago=lb?Math.round((Date.parse(date)-Date.parse(lb))/864e5):null;
+    if(lb===null||ago>=14)h+=`<div class="warnbox">${lb?'لم تنسخ تقدّمك احتياطياً منذ '+ago+' يوماً.':'لم تنسخ تقدّمك احتياطياً بعد.'} نسخة واحدة تحميك إن مُسحت بيانات المتصفح. <button class="btn small" data-act="bk-download">نزّل نسخة الآن</button></div>`;
   }
   h+=`<div class="card"><h2>مستوى إتقانك</h2><div class="stack">
     <i style="flex:${stg.m};background:var(--st-master)"></i><i style="flex:${stg.s};background:var(--st-strong)"></i><i style="flex:${stg.l};background:var(--st-learn)"></i></div>
@@ -484,7 +516,15 @@ function home(){
   h+=`<details class="card" id="settings"${settingsOpen?' open':''}><summary>الإعدادات والأدوات</summary>
     <h2>هدف اليوم (عدد الأسئلة)</h2>${chips('goal',[60,90,150,300],goal)}
     <h2>الصوت</h2><div class="mute" id="sndmsg">تأكد أن النطق يعمل على جهازك.</div><button class="btn small" data-act="snd">🔊 اختبر الصوت</button>
-    <h2>الحفظ التلقائي</h2>${tok?`<div class="mute">مفعّل. تُحفظ نتائجك في GitHub بعد كل جلسة.</div><button class="btn small" data-act="tokoff">احذف المفتاح من هذا الجهاز</button>`:`<div class="mute">غير مفعّل. أدخل المفتاح من البطاقة في أعلى الصفحة.</div>`}
+    <h2>المزامنة بين الأجهزة (اختيارية)</h2>
+    <div class="mute">${tok?'مفعّلة. تُحفظ نتائجك في GitHub بعد كل جلسة، وتظهر على أي جهاز تلصق فيه المفتاح. للتغيير الصق مفتاحاً جديداً أدناه.':'لا تحتاج إليها للتدريب اليومي. تقدّمك يُحفظ على هذا الجهاز وحده. فعّلها إن أردت نفس التقدّم على جهاز آخر أو لإضافة مستويات جديدة. أنشئ مفتاح GitHub للمستودع <bdi dir="ltr">language-trainer</bdi> بصلاحية <bdi dir="ltr">Contents: Read and write</bdi>، واختر <bdi dir="ltr">No expiration</bdi> ليبقى صالحاً.'}</div>
+    <input id="tokin" type="password" placeholder="github_pat_…" autocomplete="off"><button class="btn small primary" data-act="tokon">${tok?'استبدل المفتاح':'فعّل المزامنة'}</button><div class="mute" id="tokmsg"></div>
+    ${tok?`<button class="btn small" data-act="tokoff">احذف المفتاح من هذا الجهاز</button>`:''}
+    <h2>نسخة احتياطية</h2>
+    <div class="mute">${tok?'تقدّمك محفوظ في GitHub. هذه نسخة إضافية على جهازك.':'تقدّمك محفوظ على هذا الجهاز. نزّل نسخة من وقت لآخر حتى لا يضيع إن مُسحت بيانات المتصفح.'}</div>
+    <button class="btn small" data-act="bk-download">نزّل نسخة احتياطية</button>
+    <label class="btn small" for="bkfile" style="text-align:center">استرجع من نسخة</label><input type="file" id="bkfile" accept=".json,application/json" hidden>
+    <div class="mute" id="bkmsg"></div>
     <h2>إضافة كلمات جديدة</h2>`;
   if(tok){
     h+=`<div class="mute">الصق كلمات مستوى جديد، سطراً لكل كلمة بصيغة «word — المعنى». المكرر يندمج ولا يتأثر تقدّمك.</div>
@@ -492,7 +532,7 @@ function home(){
       <select id="impty"><option value="">النوع تلقائي</option><option value="verb">أفعال</option><option value="adjective">صفات</option><option value="phrasal">أفعال مركبة</option></select></div>
       <textarea id="impta" class="ta" dir="auto" placeholder="go — يذهب&#10;apple — تفاحة"></textarea>
       <button class="btn small" data-act="imp-preview">معاينة</button><div id="impout"></div>`;
-  }else h+=`<div class="mute">يحتاج الحفظ التلقائي مفعّلاً.</div>`;
+  }else h+=`<div class="mute">إضافة المستويات تحتاج المزامنة مفعّلة لأن الكلمات تُحفظ في مستودعك. فعّلها مرة واحدة من قسم المزامنة أعلاه عند إضافة مستوى.</div>`;
   h+=`</details>`;
   app.innerHTML=h;
 }
@@ -595,8 +635,8 @@ function finish(){
   let saveCard='',code='';
   if(!sess.practice){
     code=['v2',today()].concat(done.map(r=>r.id+'.'+MODE_LETTER[r.mode]+(r.c?'1':'0')+'.'+Math.round(r.ms/100))).join('|');
-    saveCard=`<div class="card"><h2>حفظ التقدّم</h2><div class="mute" id="savemsg">${token()?'جارٍ الحفظ في GitHub…':'الحفظ التلقائي غير مفعّل. فعّله من الصفحة الرئيسية ليتقدّم تدريبك.'}</div>
-      <div id="codecard" hidden><div class="mute">إن لم يُحفظ تلقائياً، انسخ هذا الكود وأرسله إلى Claude.</div><textarea id="code" class="ta code" readonly>${esc(code)}</textarea><button class="btn small" data-act="copy" data-target="code">انسخ الكود</button></div></div>`;
+    window.__LT_LASTCODE=code;
+    saveCard=`<div class="card"><h2>حفظ التقدّم</h2><div class="mute" id="savemsg">${token()?'جارٍ الحفظ في GitHub…':'تم حفظ تقدّمك على هذا الجهاز ✓'}</div></div>`;
   }
   app.innerHTML=`<h1>${title}</h1>
     <div class="card"><div class="big">${acc}%</div><div class="mute" style="text-align:center">${right} صحيحة من ${done.length}، ومتوسط الزمن ${(avgMs/1000).toFixed(1)} ث${done.length<plan.q.length?`، و${plan.q.length-done.length} متروكة`:''}</div>${cmp}</div>
@@ -607,13 +647,13 @@ function finish(){
     <button class="btn" data-act="back">الرجوع للرئيسية</button>`;
   sess.missed=missed;
   if(sess.practice)return;
-  const nb=$('nextbtn'),sm=$('savemsg'),cc=$('codecard');
-  const entry={code,date:today(),acc};
-  setPending(pendingList().concat([entry]));
-  const fail=(msg)=>{sm.textContent=msg;cc.hidden=false;nb.disabled=false;};
-  if(!token()){localApply(code);cc.hidden=false;nb.disabled=false;return;}
-  autosave(code).then(r=>{setPending(pendingList().filter(x=>x.code!==code));sm.textContent=r==='already'?'تقدّمك محفوظ مسبقاً ✓':'تم حفظ تقدّمك في GitHub ✓';nb.disabled=false;})
-    .catch(e=>{localApply(code);fail('تعذّر الحفظ: '+errMsg(e)+' حُفظت الجلسة على هذا الجهاز وستُرسل عند أول فرصة.');});
+  const nb=$('nextbtn'),sm=$('savemsg');
+  localApply(code);
+  if(!token()){nb.disabled=false;return;}
+  const bad=e=>e&&(e.status===401||e.status===403||e.status===404);
+  (dirty()?syncPush():autosave(code))
+    .then(r=>{setDirty(false);sm.textContent=r==='already'?'تقدّمك محفوظ مسبقاً ✓':'تم حفظ تقدّمك في GitHub ✓';nb.disabled=false;})
+    .catch(e=>{setDirty(true);sm.textContent='لم يصل التقدّم إلى GitHub: '+errMsg(e)+' تقدّمك محفوظ على هذا الجهاز ولن يضيع، '+(bad(e)?'وسيُرسل بعد تجديد المفتاح من الإعدادات.':'وسيُرسل تلقائياً عند عودة الاتصال.');nb.disabled=false;});
 }
 
 /* ===================== التفاعل ===================== */
@@ -622,16 +662,47 @@ async function copyText(t,areaId){
   catch(e){const ta=$(areaId);if(ta){ta.select();try{return document.execCommand('copy');}catch(_){}}return false;}
 }
 async function setToken(){
+  settingsOpen=true;
   const m=$('tokmsg'),t=$('tokin').value.trim();
   if(t.length<20){m.textContent='المفتاح قصير جداً. تأكد أنك نسخته كاملاً.';return;}
   m.textContent='جارٍ التحقق…';
   try{
     await ghFile('data/progress.json',t);
     lsSet('lt_token',t);
-    await loadProgress();home();
-    toast('تم تفعيل الحفظ التلقائي.');
-    if(pendingList().length)flushPending(true);
+    try{await syncPush();toast('تم تفعيل المزامنة.');}
+    catch(e){setDirty(true);toast('فُعّلت المزامنة لكن تعذّر الإرسال الآن: '+errMsg(e));}
+    home();
   }catch(e){m.textContent=(e.status===401||e.status===403||e.status===404)?'GitHub لم يقبل هذا المفتاح ('+e.status+'). تأكد أنه للمستودع language-trainer وبصلاحية Contents: Read and write.':'تعذّر الاتصال بـ GitHub: '+errMsg(e);}
+}
+function bkDownload(){
+  const data=JSON.stringify({app:'gate-backup',v:2,saved:today(),prog:PROG});
+  try{
+    const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+    const a=document.createElement('a');a.href=url;a.download='gate-backup-'+today()+'.json';
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);
+    lsSet('lt_backup_at',today());settingsOpen=true;home();toast('تم تنزيل النسخة. احتفظ بها في مكان آمن.');
+  }catch(e){
+    settingsOpen=true;const m=$('bkmsg');if(!m)return;
+    m.innerHTML=`<div class="mute">تعذّر التنزيل في هذا المتصفح. انسخ النص أدناه واحفظه في ملف.</div><textarea id="bktxt" class="ta code" readonly>${esc(data)}</textarea><button class="btn small" data-act="copy" data-target="bktxt">انسخ النص</button>`;
+    lsSet('lt_backup_at',today());
+  }
+}
+function bkRestore(file){
+  settingsOpen=true;
+  const fr=new FileReader();
+  fr.onload=async()=>{
+    const m=$('bkmsg');
+    try{
+      const j=JSON.parse(String(fr.result));
+      if(!j||j.app!=='gate-backup'||!j.prog||typeof j.prog.items!=='object'||!Array.isArray(j.prog.sessions))throw new Error('هذا ليس ملف نسخة احتياطية من بوابة الانطلاق.');
+      const n=Object.keys(j.prog.items).length;
+      PROG=mergeProgress(PROG,j.prog);cacheProg();
+      if(token()){setDirty(true);try{await syncPush();}catch(e){}}
+      home();toast('تم استرجاع النسخة ('+n+' كلمة متابَعة).');
+    }catch(e){if(m)m.textContent=(e instanceof SyntaxError)?'الملف تالف أو ليس نسخة احتياطية.':e.message;}
+  };
+  fr.onerror=()=>{const m=$('bkmsg');if(m)m.textContent='تعذّرت قراءة الملف.';};
+  fr.readAsText(file);
 }
 function impPreview(){
   settingsOpen=true;
@@ -661,6 +732,7 @@ async function impCommit(){
     throw new Error('تعارض متكرر، حاول بعد قليل.');
   }catch(e){out.innerHTML=`<div class="warnbox">${esc(errMsg(e))}</div>`;}
 }
+app.addEventListener('change',e=>{if(e.target&&e.target.id==='bkfile'&&e.target.files&&e.target.files[0])bkRestore(e.target.files[0]);});
 app.addEventListener('toggle',e=>{if(e.target&&e.target.id==='settings')settingsOpen=e.target.open;},true);
 app.addEventListener('click',e=>{
   const b=e.target.closest('[data-act]');if(!b)return;
@@ -679,7 +751,8 @@ app.addEventListener('click',e=>{
     case 'snd':{settingsOpen=true;const m=$('sndmsg');if(!ttsOK()){m.textContent='الصوت غير مدعوم في هذا المتصفح. جرّب Chrome.';break;}speak('Hello. This is a sound test.');m.textContent='إن سمعت الصوت فكل شيء تمام. وإن لم تسمع، ارفع مستوى الصوت أو جرّب متصفحاً آخر.';break;}
     case 'tokon':setToken();break;
     case 'tokoff':lsDel('lt_token');settingsOpen=true;home();break;
-    case 'flush':flushPending(false);break;
+    case 'flush':syncPush().then(()=>{toast('تم الحفظ في GitHub ✓');home();}).catch(e=>toast('تعذّر الحفظ: '+errMsg(e)));break;
+    case 'bk-download':bkDownload();break;
     case 'copy':{const ta=$(b.dataset.target);copyText(ta?ta.value:'',b.dataset.target).then(ok=>toast(ok?'تم النسخ ✓':'تعذّر النسخ، حدّد النص وانسخه يدوياً.'));break;}
     case 'imp-preview':impPreview();break;
     case 'imp-commit':impCommit();break;
@@ -702,14 +775,18 @@ document.addEventListener('keydown',e=>{
 /* ===================== الإقلاع ===================== */
 async function boot(){
   app.innerHTML='<h1>بوابة الانطلاق</h1><p class="mute">جارٍ تحميل الكلمات…</p>';
-  try{WORDS=await pubJSON('data/words.json',false);}
-  catch(e){return fatal('تعذّر تحميل الكلمات ('+errMsg(e)+'). تأكد من الاتصال بالإنترنت ثم أعد المحاولة.');}
+  try{WORDS=await pubJSON('data/words.json',false);lsSet('lt_words_cache',WORDS);}
+  catch(e){
+    const c=lsGet('lt_words_cache');
+    if(c&&Array.isArray(c.items)&&c.items.length)WORDS=c;
+    else return fatal('تعذّر تحميل الكلمات ('+errMsg(e)+'). تأكد من الاتصال بالإنترنت ثم أعد المحاولة.');
+  }
   buildIndex();initVoices();
   await loadProgress();
   home();
-  if(token()&&pendingList().length)flushPending(true);
+  if(token()&&dirty())syncPush().then(()=>{toast('تم حفظ جلسات كانت معلّقة');if(!sess)home();}).catch(()=>{});
 }
-window.__LT={sha1,makePlan,parseImport,mergeInto,applyToProgress,altsOf,stagesOf,streakOf,acc7Of,ensureShape,cleanTr,cur:()=>sess&&sess.item?{t:sess.cur&&sess.cur.t,item:sess.item,mode:sess.mode,correctIdx:sess.correctIdx,i:sess.i,n:sess.plan.q.length,screen:sess.screen,locked:sess.locked}:null};
+window.__LT={mergeProgress,sha1,makePlan,parseImport,mergeInto,applyToProgress,altsOf,stagesOf,streakOf,acc7Of,ensureShape,cleanTr,cur:()=>sess&&sess.item?{t:sess.cur&&sess.cur.t,item:sess.item,mode:sess.mode,correctIdx:sess.correctIdx,i:sess.i,n:sess.plan.q.length,screen:sess.screen,locked:sess.locked}:null};
 if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){navigator.serviceWorker.register('sw.js').catch(()=>{});}
 boot();
 })();
