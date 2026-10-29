@@ -1,0 +1,76 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'build-trigger.txt'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Capacitor
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+
+      - name: Prepare web files
+        run: bash app/prepare-www.sh
+
+      - name: Create Android project
+        working-directory: app
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.${{ github.run_number }}
+        run: |
+          npx cap add android
+          python3 -m pip install --quiet pillow || python3 -m pip install --quiet --break-system-packages pillow
+          python3 tools/make_assets.py android/app/src/main/res
+          python3 tools/patch_android.py android
+
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build APK
+        working-directory: app/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Check APK
+        run: |
+          APK=app/android/app/build/outputs/apk/release/app-release.apk
+          ls -l "$APK"
+          AS="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$AS" ]; then "$AS" verify --print-certs "$APK" | head -5; fi
+          cp "$APK" Gate.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete app-latest --cleanup-tag --yes || true
+          gh release create app-latest Gate.apk \
+            --title "بوابة الانطلاق - نسخة ${{ github.run_number }}" \
+            --notes "ملف التطبيق لأندرويد. نسخة ${{ github.run_number }}، بُني في ${{ github.run_started_at }}." \
+            --target "${{ github.sha }}" \
+            --latest
