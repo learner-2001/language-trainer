@@ -1,0 +1,11 @@
+{
+  "appId": "com.learner2001.gate",
+  "appName": "بوابة الانطلاق",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
