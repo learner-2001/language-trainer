@@ -32,6 +32,10 @@ button{cursor:pointer}
 .btn.go{background:var(--go);color:var(--go-ink);border-color:var(--go);font-weight:800}
 .btn.small{min-height:44px;font-size:.98rem}
 .btn:disabled{opacity:.55;cursor:default}
+a.btn{display:flex;align-items:center;justify-content:center;text-decoration:none;color:inherit}
+.opt{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html,body{overscroll-behavior-y:contain;-webkit-tap-highlight-color:transparent}
+.bkpaste{margin-top:8px}.bkpaste summary{cursor:pointer;padding:6px 0}
 input[type=password],select,.ta{width:100%;min-height:46px;border-radius:var(--r);border:1px solid var(--line);background:var(--bg);padding:10px;margin-top:8px}
 input[type=password]{direction:ltr;font-size:.9rem}
 select{width:auto;min-width:96px;margin-inline-end:8px}
@@ -117,7 +121,10 @@ const LEVELS=['A1','A2','B1','B2','C1','C2'];
 const lvCmp=(a,b)=>{const x=LEVELS.indexOf(a),y=LEVELS.indexOf(b);return (x<0?99:x)-(y<0?99:y)||(a<b?-1:a>b?1:0);};
 
 let WORDS=null,PROG=null,PROG_ERR=null,quotaWarned=false,ALL=[],BYID=new Map(),POOL={},ALTS=new Map();
-let sess=null,settingsOpen=false,impState=null,voiceEN=null,toastT=null;
+let sess=null,settingsOpen=false,impState=null,voiceEN=null,toastT=null,wl=null;
+async function wakeOn(){try{if(navigator.wakeLock&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>{wl=null;});}}catch(e){wl=null;}}
+function wakeOff(){try{if(wl)wl.release();}catch(e){}wl=null;}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&sess&&sess.screen==='q')wakeOn();});
 
 /* ===================== أدوات صغيرة ===================== */
 const ymd=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -164,9 +171,17 @@ function utf8ToB64(s){const b=new TextEncoder().encode(s);let bin='';for(let i=0
 function vibrate(ms){try{if(navigator.vibrate)navigator.vibrate(ms);}catch(e){}}
 
 /* ===================== الصوت ===================== */
-function ttsOK(){return 'speechSynthesis' in window&&typeof window.SpeechSynthesisUtterance!=='undefined';}
-function initVoices(){if(!ttsOK())return;const load=()=>{try{const vs=speechSynthesis.getVoices()||[];voiceEN=vs.find(v=>/^en[-_]US/i.test(v.lang))||vs.find(v=>/^en/i.test(v.lang))||null;}catch(e){}};load();try{speechSynthesis.onvoiceschanged=load;}catch(e){}}
-function speak(text){if(!ttsOK())return false;try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-US';if(voiceEN)u.voice=voiceEN;u.rate=0.9;speechSynthesis.speak(u);return true;}catch(e){return false;}}
+const NATIVE=(()=>{try{return !!(window.Capacitor&&typeof window.Capacitor.isNativePlatform==='function'&&window.Capacitor.isNativePlatform());}catch(e){return false;}})();
+function plug(n){try{return (NATIVE&&window.Capacitor.Plugins&&window.Capacitor.Plugins[n])||null;}catch(e){return null;}}
+function webTTS(){return 'speechSynthesis' in window&&typeof window.SpeechSynthesisUtterance!=='undefined';}
+function ttsOK(){return !!plug('TextToSpeech')||webTTS();}
+function initVoices(){if(!webTTS())return;const load=()=>{try{const vs=speechSynthesis.getVoices()||[];voiceEN=vs.find(v=>/^en[-_]US/i.test(v.lang))||vs.find(v=>/^en/i.test(v.lang))||null;}catch(e){}};load();try{speechSynthesis.onvoiceschanged=load;}catch(e){}}
+function webSpeak(text){if(!webTTS())return false;try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-US';if(voiceEN)u.voice=voiceEN;u.rate=0.9;speechSynthesis.speak(u);return true;}catch(e){return false;}}
+function speak(text){
+  const n=plug('TextToSpeech');
+  if(n){try{const p=n.speak({text:String(text),lang:'en-US',rate:0.9,pitch:1,volume:1,queueStrategy:0});if(p&&p.catch)p.catch(()=>{webSpeak(text);});return true;}catch(e){}}
+  return webSpeak(text);
+}
 
 /* ===================== GitHub ===================== */
 const API=p=>`https://api.github.com/repos/${CFG.owner}/${CFG.repo}/contents/${p}`;
@@ -183,6 +198,16 @@ async function pubJSON(path,fresh){
   const r=await fetch(RAW(path)+(fresh?'?t='+Date.now():''),fresh?{cache:'no-store'}:undefined);
   if(!r.ok)throw statusErr(r.status);
   return r.json();
+}
+async function localJSON(path,fresh){
+  const r=await fetch(path,fresh?{cache:'no-store'}:undefined);
+  if(!r.ok)throw statusErr(r.status);
+  return r.json();
+}
+/* الأولوية للملف المرفق مع الصفحة أو التطبيق (يعمل بلا إنترنت)، ثم GitHub */
+async function dataJSON(path,fresh){
+  try{return await localJSON(path,fresh);}catch(e){}
+  return pubJSON(path,fresh);
 }
 async function ghFile(path,tok){
   const H=a=>({headers:{Authorization:'Bearer '+tok,Accept:a},cache:'no-store'});
@@ -281,7 +306,7 @@ async function loadProgress(){
   const tok=token(),cache=lsGet('lt_prog_cache'),hasCache=!!(cache&&cache.items);
   if(!tok){
     if(hasCache)PROG=ensureShape(cache);
-    else{try{PROG=ensureShape(await pubJSON('data/progress.json',true));}catch(e){PROG_ERR=e;PROG=ensureShape({});}}
+    else{try{PROG=ensureShape(await dataJSON('data/progress.json',true));}catch(e){PROG_ERR=e;PROG=ensureShape({});}}
     cacheProg();return;
   }
   try{
@@ -474,7 +499,7 @@ function fatal(msg){app.innerHTML=`<h1>بوابة الانطلاق</h1><div clas
 function chips(act,vals,cur,fmt){return `<div class="chips">${vals.map(v=>`<button class="chip${+v===+cur?' on':''}" data-act="${act}" data-v="${v}">${fmt?fmt(v):v}</button>`).join('')}</div>`;}
 
 function home(){
-  sess=null;
+  sess=null;wakeOff();
   const date=today(),P=PROG.items,tok=token();
   const dueN=ALL.reduce((n,i)=>n+((P[i.id]&&P[i.id].d&&P[i.id].d<=date)?1:0),0);
   const newN=ALL.reduce((n,i)=>n+(P[i.id]?0:1),0);
@@ -516,6 +541,7 @@ function home(){
   h+=`<details class="card" id="settings"${settingsOpen?' open':''}><summary>الإعدادات والأدوات</summary>
     <h2>هدف اليوم (عدد الأسئلة)</h2>${chips('goal',[60,90,150,300],goal)}
     <h2>الصوت</h2><div class="mute" id="sndmsg">تأكد أن النطق يعمل على جهازك.</div><button class="btn small" data-act="snd">🔊 اختبر الصوت</button>
+    ${NATIVE?'':`<h2>تطبيق على الهاتف</h2><div class="mute">حمّل التطبيق لتتدرّب دون إنترنت وبنطق أصلي من هاتفك (أندرويد).</div><a class="btn small" id="apklink" href="https://github.com/${CFG.owner}/${CFG.repo}/releases/latest/download/Gate.apk">⬇ نزّل التطبيق</a>`}
     <h2>المزامنة بين الأجهزة (اختيارية)</h2>
     <div class="mute">${tok?'مفعّلة. تُحفظ نتائجك في GitHub بعد كل جلسة، وتظهر على أي جهاز تلصق فيه المفتاح. للتغيير الصق مفتاحاً جديداً أدناه.':'لا تحتاج إليها للتدريب اليومي. تقدّمك يُحفظ على هذا الجهاز وحده. فعّلها إن أردت نفس التقدّم على جهاز آخر أو لإضافة مستويات جديدة. أنشئ مفتاح GitHub للمستودع <bdi dir="ltr">language-trainer</bdi> بصلاحية <bdi dir="ltr">Contents: Read and write</bdi>، واختر <bdi dir="ltr">No expiration</bdi> ليبقى صالحاً.'}</div>
     <input id="tokin" type="password" placeholder="github_pat_…" autocomplete="off"><button class="btn small primary" data-act="tokon">${tok?'استبدل المفتاح':'فعّل المزامنة'}</button><div class="mute" id="tokmsg"></div>
@@ -524,6 +550,7 @@ function home(){
     <div class="mute">${tok?'تقدّمك محفوظ في GitHub. هذه نسخة إضافية على جهازك.':'تقدّمك محفوظ على هذا الجهاز. نزّل نسخة من وقت لآخر حتى لا يضيع إن مُسحت بيانات المتصفح.'}</div>
     <button class="btn small" data-act="bk-download">نزّل نسخة احتياطية</button>
     <label class="btn small" for="bkfile" style="text-align:center">استرجع من نسخة</label><input type="file" id="bkfile" accept=".json,application/json" hidden>
+    <details class="bkpaste"><summary class="mute">أو استرجع بلصق النص</summary><textarea id="bkpaste" class="ta code" dir="ltr" placeholder="الصق هنا محتوى النسخة الاحتياطية"></textarea><button class="btn small" data-act="bk-paste">استرجع من النص</button></details>
     <div class="mute" id="bkmsg"></div>
     <h2>إضافة كلمات جديدة</h2>`;
   if(tok){
@@ -544,6 +571,7 @@ function startSession(practice){
   else plan=makePlan(ALL,PROG,today(),size,ttsOK());
   if(!plan.q.length){toast('لا توجد أسئلة متاحة الآن.');return;}
   sess={plan,i:0,res:[],tok:0,timer:null,locked:false,practice:!!practice,screen:'q'};
+  wakeOn();
   showQ();
 }
 function clearTimer(){if(sess&&sess.timer){clearInterval(sess.timer);sess.timer=null;}}
@@ -609,7 +637,7 @@ function onTimeout(tok){
 }
 
 function finish(){
-  clearTimer();sess.screen='sum';
+  clearTimer();wakeOff();sess.screen='sum';
   const plan=sess.plan;
   for(let i=0;i<plan.q.length;i++)if(!sess.res[i])sess.res[i]={id:plan.q[i].id,mode:plan.q[i].mode,s:1,c:0,ms:0};
   const done=sess.res.filter(r=>!r.s),right=done.filter(r=>r.c).length;
@@ -674,33 +702,47 @@ async function setToken(){
     home();
   }catch(e){m.textContent=(e.status===401||e.status===403||e.status===404)?'GitHub لم يقبل هذا المفتاح ('+e.status+'). تأكد أنه للمستودع language-trainer وبصلاحية Contents: Read and write.':'تعذّر الاتصال بـ GitHub: '+errMsg(e);}
 }
-function bkDownload(){
+function bkText(data){
+  settingsOpen=true;const m=$('bkmsg');if(!m)return;
+  m.innerHTML=`<div class="mute">انسخ النص أدناه واحفظه في ملاحظات أو أرسله لنفسك. ولاسترجاعه لاحقاً الصقه في «استرجع بلصق النص».</div><textarea id="bktxt" class="ta code" readonly>${esc(data)}</textarea><button class="btn small" data-act="copy" data-target="bktxt">انسخ النص</button>`;
+  lsSet('lt_backup_at',today());
+}
+async function bkDownload(){
   const data=JSON.stringify({app:'gate-backup',v:2,saved:today(),prog:PROG});
+  if(NATIVE){
+    const FS=plug('Filesystem'),SH=plug('Share');
+    if(FS&&SH){
+      try{
+        const w=await FS.writeFile({path:'gate-backup-'+today()+'.json',data,directory:'CACHE',encoding:'utf8'});
+        await SH.share({title:'نسخة بوابة الانطلاق',text:'نسخة احتياطية من تقدّمي',url:w.uri,dialogTitle:'احفظ النسخة الاحتياطية'});
+        lsSet('lt_backup_at',today());settingsOpen=true;home();toast('تم تجهيز النسخة. اختر مكان حفظها.');return;
+      }catch(e){if(/cancel/i.test(String(e&&e.message||e))){settingsOpen=true;return;}}
+    }
+    return bkText(data);
+  }
   try{
     const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));
     const a=document.createElement('a');a.href=url;a.download='gate-backup-'+today()+'.json';
     document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);
     lsSet('lt_backup_at',today());settingsOpen=true;home();toast('تم تنزيل النسخة. احتفظ بها في مكان آمن.');
-  }catch(e){
-    settingsOpen=true;const m=$('bkmsg');if(!m)return;
-    m.innerHTML=`<div class="mute">تعذّر التنزيل في هذا المتصفح. انسخ النص أدناه واحفظه في ملف.</div><textarea id="bktxt" class="ta code" readonly>${esc(data)}</textarea><button class="btn small" data-act="copy" data-target="bktxt">انسخ النص</button>`;
-    lsSet('lt_backup_at',today());
-  }
+  }catch(e){bkText(data);}
+}
+async function bkApply(text){
+  settingsOpen=true;
+  const m=$('bkmsg');
+  try{
+    const j=JSON.parse(String(text).trim());
+    if(!j||j.app!=='gate-backup'||!j.prog||typeof j.prog.items!=='object'||!Array.isArray(j.prog.sessions))throw new Error('هذا ليس ملف نسخة احتياطية من بوابة الانطلاق.');
+    const n=Object.keys(j.prog.items).length;
+    PROG=mergeProgress(PROG,j.prog);cacheProg();
+    if(token()){setDirty(true);try{await syncPush();}catch(e){}}
+    home();toast('تم استرجاع النسخة ('+n+' كلمة متابَعة).');
+  }catch(e){if(m)m.textContent=(e instanceof SyntaxError)?'الملف تالف أو ليس نسخة احتياطية.':e.message;}
 }
 function bkRestore(file){
   settingsOpen=true;
   const fr=new FileReader();
-  fr.onload=async()=>{
-    const m=$('bkmsg');
-    try{
-      const j=JSON.parse(String(fr.result));
-      if(!j||j.app!=='gate-backup'||!j.prog||typeof j.prog.items!=='object'||!Array.isArray(j.prog.sessions))throw new Error('هذا ليس ملف نسخة احتياطية من بوابة الانطلاق.');
-      const n=Object.keys(j.prog.items).length;
-      PROG=mergeProgress(PROG,j.prog);cacheProg();
-      if(token()){setDirty(true);try{await syncPush();}catch(e){}}
-      home();toast('تم استرجاع النسخة ('+n+' كلمة متابَعة).');
-    }catch(e){if(m)m.textContent=(e instanceof SyntaxError)?'الملف تالف أو ليس نسخة احتياطية.':e.message;}
-  };
+  fr.onload=()=>bkApply(fr.result);
   fr.onerror=()=>{const m=$('bkmsg');if(m)m.textContent='تعذّرت قراءة الملف.';};
   fr.readAsText(file);
 }
@@ -748,11 +790,16 @@ app.addEventListener('click',e=>{
     case 'ans':onAnswer(+b.dataset.k);break;
     case 'again':if(sess&&sess.item)speak(sess.item.w);break;
     case 'quit':if(confirm('إنهاء الجلسة الآن؟ الأسئلة المتبقية تُحتسب «متروكة».')){clearTimer();sess.tok++;finish();}break;
-    case 'snd':{settingsOpen=true;const m=$('sndmsg');if(!ttsOK()){m.textContent='الصوت غير مدعوم في هذا المتصفح. جرّب Chrome.';break;}speak('Hello. This is a sound test.');m.textContent='إن سمعت الصوت فكل شيء تمام. وإن لم تسمع، ارفع مستوى الصوت أو جرّب متصفحاً آخر.';break;}
+    case 'snd':{settingsOpen=true;const m=$('sndmsg');if(!ttsOK()){m.textContent='الصوت غير مدعوم في هذا المتصفح. جرّب Chrome.';break;}
+      const n=plug('TextToSpeech');
+      if(n){m.textContent='جارٍ النطق…';let p;try{p=Promise.resolve(n.speak({text:'Hello. This is a sound test.',lang:'en-US',rate:0.9,pitch:1,volume:1,queueStrategy:0}));}catch(e){p=Promise.reject(e);}
+        p.then(()=>{m.textContent='إن سمعت الصوت فكل شيء تمام ✓';}).catch(()=>{m.textContent='تعذّر النطق. من إعدادات الهاتف: النظام ← اللغات ← تحويل النص إلى كلام، ثم ثبّت بيانات صوت الإنجليزية.';});break;}
+      speak('Hello. This is a sound test.');m.textContent='إن سمعت الصوت فكل شيء تمام. وإن لم تسمع، ارفع مستوى الصوت أو جرّب متصفحاً آخر.';break;}
     case 'tokon':setToken();break;
     case 'tokoff':lsDel('lt_token');settingsOpen=true;home();break;
     case 'flush':syncPush().then(()=>{toast('تم الحفظ في GitHub ✓');home();}).catch(e=>toast('تعذّر الحفظ: '+errMsg(e)));break;
     case 'bk-download':bkDownload();break;
+    case 'bk-paste':{const t=$('bkpaste');bkApply(t?t.value:'');break;}
     case 'copy':{const ta=$(b.dataset.target);copyText(ta?ta.value:'',b.dataset.target).then(ok=>toast(ok?'تم النسخ ✓':'تعذّر النسخ، حدّد النص وانسخه يدوياً.'));break;}
     case 'imp-preview':impPreview();break;
     case 'imp-commit':impCommit();break;
@@ -773,21 +820,34 @@ document.addEventListener('keydown',e=>{
 });
 
 /* ===================== الإقلاع ===================== */
+async function refreshWords(){
+  try{const w=await pubJSON('data/words.json',true);if(w&&Array.isArray(w.items)&&w.items.length>WORDS.items.length){lsSet('lt_words_cache',w);toast('وصلت كلمات جديدة. ستظهر عند فتح التطبيق مرة أخرى.');}}catch(e){}
+}
 async function boot(){
   app.innerHTML='<h1>بوابة الانطلاق</h1><p class="mute">جارٍ تحميل الكلمات…</p>';
-  try{WORDS=await pubJSON('data/words.json',false);lsSet('lt_words_cache',WORDS);}
-  catch(e){
-    const c=lsGet('lt_words_cache');
-    if(c&&Array.isArray(c.items)&&c.items.length)WORDS=c;
-    else return fatal('تعذّر تحميل الكلمات ('+errMsg(e)+'). تأكد من الاتصال بالإنترنت ثم أعد المحاولة.');
-  }
+  try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
+  let W=null,err=null;
+  try{W=await dataJSON('data/words.json',false);}catch(e){err=e;}
+  const c=lsGet('lt_words_cache'),cOK=!!(c&&Array.isArray(c.items)&&c.items.length);
+  if(W&&Array.isArray(W.items)&&W.items.length){
+    if(cOK&&c.items.length>W.items.length)WORDS=c;else{WORDS=W;lsSet('lt_words_cache',W);}
+  }else if(cOK)WORDS=c;
+  else return fatal('تعذّر تحميل الكلمات ('+errMsg(err||new Error('ملف الكلمات فارغ'))+'). تأكد من الاتصال بالإنترنت ثم أعد المحاولة.');
   buildIndex();initVoices();
   await loadProgress();
   home();
   if(token()&&dirty())syncPush().then(()=>{toast('تم حفظ جلسات كانت معلّقة');if(!sess)home();}).catch(()=>{});
+  if(NATIVE)refreshWords();
 }
-window.__LT={mergeProgress,sha1,makePlan,parseImport,mergeInto,applyToProgress,altsOf,stagesOf,streakOf,acc7Of,ensureShape,cleanTr,cur:()=>sess&&sess.item?{t:sess.cur&&sess.cur.t,item:sess.item,mode:sess.mode,correctIdx:sess.correctIdx,i:sess.i,n:sess.plan.q.length,screen:sess.screen,locked:sess.locked}:null};
-if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){navigator.serviceWorker.register('sw.js').catch(()=>{});}
+window.__LT={speak,plug,mergeProgress,sha1,makePlan,parseImport,mergeInto,applyToProgress,altsOf,stagesOf,streakOf,acc7Of,ensureShape,cleanTr,cur:()=>sess&&sess.item?{t:sess.cur&&sess.cur.t,item:sess.item,mode:sess.mode,correctIdx:sess.correctIdx,i:sess.i,n:sess.plan.q.length,screen:sess.screen,locked:sess.locked}:null};
+if(!NATIVE&&'serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){navigator.serviceWorker.register('sw.js').catch(()=>{});}
+/* زر الرجوع في أندرويد: داخل الجلسة يسأل قبل الإنهاء، وفي الرئيسية يغلق التطبيق */
+function backBtn(){
+  if(sess&&sess.screen==='q'){if(confirm('إنهاء الجلسة الآن؟ الأسئلة المتبقية تُحتسب «متروكة».')){clearTimer();sess.tok++;finish();}}
+  else if(sess)home();
+  else{const A=plug('App');if(A&&A.exitApp)A.exitApp();}
+}
+{const A=plug('App');if(A&&A.addListener){try{A.addListener('backButton',backBtn);}catch(e){}}}
 boot();
 })();
 </script>
